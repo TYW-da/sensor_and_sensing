@@ -18,9 +18,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "usbd_cdc_if.h"
+#include "stdio.h"
+extern uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 
 /* USER CODE END Includes */
 
@@ -40,6 +44,9 @@ typedef struct {
     int position;
     uint16_t prev_A;
     uint16_t prev_B;
+    int last_position;
+    uint32_t last_update_time;
+    float speed;
 } QuadratureEncoder;
 
 void QuadratureEncoder_Init(QuadratureEncoder *encoder, int steps_per_revolution) {
@@ -47,6 +54,9 @@ void QuadratureEncoder_Init(QuadratureEncoder *encoder, int steps_per_revolution
     encoder->position = 0;
     encoder->prev_A = 0;
     encoder->prev_B = 0;
+    encoder->last_position = 0;
+    encoder->last_update_time = HAL_GetTick();
+    encoder->speed = 0.0f;
 }
 
 void QuadratureEncoder_Update(QuadratureEncoder *encoder, uint16_t A_raw, uint16_t B_raw) {
@@ -76,6 +86,19 @@ void QuadratureEncoder_Update(QuadratureEncoder *encoder, uint16_t A_raw, uint16
 
     encoder->prev_A = A;
     encoder->prev_B = B;
+
+    // Calculate speed
+    uint32_t current_time = HAL_GetTick();
+    uint32_t dt = current_time - encoder->last_update_time; // Time difference in milliseconds
+
+    if (dt > 0) {
+        int position_change = encoder->position - encoder->last_position;
+        encoder->speed = (1000.0f * position_change) / dt; // Speed in steps per second
+    }
+
+    // Update last position and time
+    encoder->last_position = encoder->position;
+    encoder->last_update_time = current_time;
 }
 
 float QuadratureEncoder_GetAngle(QuadratureEncoder *encoder) {
@@ -140,6 +163,7 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
   QuadratureEncoder_Init(&encoder, 80);
   /* USER CODE END 2 */
@@ -158,6 +182,14 @@ int main(void)
 	  QuadratureEncoder_Update(&encoder, A_raw, B_raw);
 
       angle = QuadratureEncoder_GetAngle(&encoder);
+
+
+      snprintf(UserTxBufferFS, sizeof(UserTxBufferFS), "Speed: %.2f steps/s | Angle: %.2f°\r\n", encoder.speed, angle);
+
+      /* Send data to USB CDC */
+      CDC_Transmit_FS((uint8_t*)UserTxBufferFS, strlen(UserTxBufferFS));
+
+      HAL_Delay(100); // Delay to prevent excessive printing
 
   }
   /* USER CODE END 3 */
@@ -180,15 +212,14 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 84;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 4;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 15;
+  RCC_OscInitStruct.PLL.PLLN = 144;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
+  RCC_OscInitStruct.PLL.PLLQ = 5;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -203,7 +234,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
   {
     Error_Handler();
   }
