@@ -16,7 +16,7 @@ except serial.SerialException as e:
     exit()
 
 # Collect raw data
-data_length = 2000 # Number of data points to collect
+data_length = 5000 # Number of data points to collect
 raw_data = []
 print("Collecting data...")
 while len(raw_data) < data_length:

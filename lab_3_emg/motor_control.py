@@ -1,21 +1,28 @@
+import can
+import struct 
 import serial
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from collections import deque
 import numpy as np
 from scipy.signal import iirnotch, lfilter, butter, find_peaks
+import time 
+bus = can.Bus( 
+    interface='slcan',
+    channel='COM6',
+    bitrate=1e6,
+)
 
-# Serial port configuration
-SERIAL_PORT = 'COM9'
-BAUD_RATE = 115200
+ser = serial.Serial('COM9', 115200, timeout=1)
+def set_angle(angle):
+    control_bytes = struct.pack('<i', angle*100)
+    msg = can.Message(
+        arbitration_id=0x141,
+        data=[0xA3, 0, 0, 0, *control_bytes],
+        is_extended_id=False
+        )
+    bus.send(msg)
 
-# Initialize the serial connection
-try:
-    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    print(f"Connected to {SERIAL_PORT} at {BAUD_RATE} baud.")
-except serial.SerialException as e:
-    print(f"Failed to connect to {SERIAL_PORT}: {e}")
-    exit()
 
 # Data buffer for real-time plotting
 data_buffer_size = 1000  # Number of data points to display
@@ -35,7 +42,7 @@ line_notch_filtered, = ax.plot([], [], lw=2, label="Notch Filtered", color='gree
 line_lowpass, = ax.plot([], [], lw=2, label="Low-Pass Filtered", color='yellow')
 line_smoothed, = ax.plot([], [], lw=2, label="Smoothed Data", color='red')
 
-ax.set_ylim(-10, 500)  # Adjust based on your expected data range
+ax.set_ylim(-10, 250)  # Adjust based on your expected data range
 ax.set_xlim(0, data_buffer_size)
 ax.set_title("Real-Time Serial Data Plot with Combined Notch, Low-Pass, and Smoothing")
 ax.set_xlabel("Time")
@@ -43,6 +50,7 @@ ax.set_ylabel("Value")
 ax.legend()
 
 fs = 1000  # Sampling frequency (Hz)
+last_peak_time = 0
 
 # Design notch filters
 frequencies = [50, 62, 124]
@@ -53,14 +61,10 @@ for f0 in frequencies:
     notch_filters.append((b_notch, a_notch))
 
 # Design low-pass filter
-cutoff_freq = 450  # Cutoff frequency in Hz
+cutoff_freq = 400  # Cutoff frequency in Hz
 nyquist = 0.5 * fs
 normal_cutoff = cutoff_freq / nyquist
 b_lowpass, a_lowpass = butter(4, normal_cutoff, btype='low', analog=False)
-
-# Peak locking mechanism
-lock_duration_samples = int(0.2 * fs)  # Lock for 200 ms (adjust as needed)
-lock_counter = 0  # Counter to track lock duration
 
 # Function to initialize the plot
 def init():
@@ -72,8 +76,7 @@ def init():
 
 # Function to update the plot
 def update(frame):
-    global lock_counter
-    
+    global last_peak_time
     try:
         while ser.in_waiting:
             data = ser.readline().decode('utf-8', errors='replace').strip()
@@ -119,35 +122,22 @@ def update(frame):
     # Update the smoothed data plot
     line_smoothed.set_data(range(len(smoothed_data_buffer)), smoothed_data_buffer)
     
-    # Perform peak detection on the 250 most recent values in the smoothed data buffer
-    if len(smoothed_data_buffer) >= 250:  # Ensure enough data for peak detection
-        recent_data = list(smoothed_data_buffer)[-250:]  # Extract the 250 most recent values
-        peaks, _ = find_peaks(recent_data, height=35)  # Detect peaks in the recent data
+    # Perform peak detection on the smoothed data
+    if len(smoothed_data_buffer) >= 10 and time.time() - last_peak_time > 0.5:  # Ensure enough data for peak detection
+        recent_data = np.array(smoothed_data_buffer)[-250:]  # Extract the 250 most recent values
+        peaks, _ = find_peaks(recent_data, height=40)  # Detect peaks in the recent data
         
-        # Process detected peaks
-        for peak in peaks:
-            # Convert peak index relative to the full buffer
-            buffer_index = len(smoothed_data_buffer) - 250 + peak
-            
-            # Skip processing if locked
-            if lock_counter > 0:
-                continue
-            
-            amplitude = smoothed_data_buffer[buffer_index]
-            
-            # Classify the peak based on amplitude
-            if amplitude < 90:  # Define threshold for small vs big peaks
-                print("1")  # Small peak
+        if len(peaks) > 0:
+            last_peak_time = time.time()
+            peak_heights = recent_data[peaks]
+            amplitude = np.max(peak_heights)
+            if amplitude < 80:
+                set_angle(90)
+                print('---- ACTION 1 DETECTED. Turn to 90 ----')
             else:
-                print("2")  # Big peak
-            
-            # Lock the system for a short duration
-            lock_counter = lock_duration_samples
-        
-        # Decrement the lock counter
-        if lock_counter > 0:
-            lock_counter -= 1
-    
+                set_angle(-90)
+                print('---- ACTION 2 DETECTED. Turn to -90 ----')
+                
     return line_raw, line_notch_filtered, line_lowpass, line_smoothed
 
 # Set up the animation
@@ -159,3 +149,7 @@ plt.show()
 # Close the serial connection when done
 ser.close()
 print("Serial connection closed.")
+
+ser.close()
+bus.shutdown()
+print("Shut down")
